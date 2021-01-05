@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
-	"sql_dumper/config"
+	"sql_mapper/config"
 	"strings"
 	"text/template"
 
@@ -33,6 +33,7 @@ type ColumnStruct struct {
 	AutoIncrement bool
 	Charset       string
 	CollationName string
+	Empty         string
 }
 
 type KeyStruct struct {
@@ -60,20 +61,19 @@ type ColumnTypeStruct struct {
 	Type      string
 }
 
-var tableTmpl = "/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;" +
-	"--\n" +
+var tableTmpl = "--\n" +
 	"-- Table structure for table `{{.TableName}}`\n" +
 	"--\n" +
 	"{{ if .DropTable }}DROP TABLE IF EXISTS `{{.TableName}}`;{{ end }}\n" +
 	"CREATE TABLE `{{.TableName}}` (\n" +
 	"{{ range $i, $v := .Columns }}" +
 	"  `{{$v.Name}}` {{$v.Type}} " +
-	"{{ if and $v.Charset (not $v.CollationName) }}CHARACTER SET {{$v.Charset}} {{end}}" +
 	"{{ if $v.CollationName }}CHARACTER SET {{ if $v.Charset }}{{$v.Charset}}{{else}}{{$.Charset}}{{end}} COLLATE {{$v.CollationName}} {{ end }}" +
 	"{{ if (eq $v.Null \"NO\") }}NOT NULL{{ end }}" +
 	"{{ if and (eq $v.Null \"YES\") (ne $v.PrimaryKey true) }}DEFAULT NULL{{ end }} " +
-	"{{ if (ne $v.Default \"\") }}DEFAULT {{ if (eq $v.Default \"CURRENT_TIMESTAMP\") }}{{$v.Default}}{{ else }}'{{$v.Default}}'{{ end }}" +
-	"{{ end }}{{if $v.AutoIncrement}}AUTO_INCREMENT{{end}},\n" +
+	"{{ if (ne $v.Default \"\") }}DEFAULT {{ if (eq $v.Default \"CURRENT_TIMESTAMP\") }}{{$v.Default}}{{ else }}'{{$v.Default}}'{{ end }}{{ end }}" +
+	"{{ if (eq $v.Empty \"1\") }}DEFAULT '' {{ end }}" +
+	"{{ if $v.AutoIncrement }}AUTO_INCREMENT{{ end }},\n" +
 	"{{ end }}" +
 	"{{- if .Primary }}" +
 	"PRIMARY KEY ({{range .Primary}}`{{.}}`,{{end}}),\n" +
@@ -91,7 +91,8 @@ var tableTmpl = "/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FORE
 	"{{ end -}}" +
 	") ENGINE={{.Engine}} DEFAULT CHARSET={{.Charset}};\n\n"
 
-func CreateTable(engine *xorm.Engine) {
+// ExportTablesSchema ---
+func ExportTablesSchema(engine *xorm.Engine) {
 	tables, err := engine.Query("select * from information_schema.tables where TABLE_SCHEMA = \"" + config.Dump.Database + "\";")
 	if err != nil {
 		log.Fatal(err.Error())
@@ -105,9 +106,12 @@ func CreateTable(engine *xorm.Engine) {
 	charset := string(schemata[0]["DEFAULT_CHARACTER_SET_NAME"])
 	collationName := string(schemata[0]["DEFAULT_COLLATION_NAME"])
 
+	fmt.Println("/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;")
+	fmt.Println("SET NAMES " + charset + ";\n\n")
+
 	for _, table := range tables {
 		var t TableStruct
-		columns, err := engine.Query("select * from information_schema.columns where TABLE_SCHEMA = \"" + config.Dump.Database + "\" AND TABLE_NAME = \"" + string(table["TABLE_NAME"]) + "\";")
+		columns, err := engine.Query("select *, IF(COLUMN_DEFAULT = '' AND COLUMN_DEFAULT IS NOT NULL, '1', '0') as EMPTY from information_schema.columns where TABLE_SCHEMA = \"" + config.Dump.Database + "\" AND TABLE_NAME = \"" + string(table["TABLE_NAME"]) + "\";")
 		if err != nil {
 			log.Fatal(err.Error())
 		}
@@ -157,6 +161,7 @@ func CreateTable(engine *xorm.Engine) {
 			c.Type = string(column["COLUMN_TYPE"])
 			c.Null = string(column["IS_NULLABLE"])
 			c.Default = string(column["COLUMN_DEFAULT"])
+			c.Empty = string(column["EMPTY"])
 			c.ColumnKey = string(column["COLUMN_KEY"])
 			if string(column["COLUMN_KEY"]) == "PRI" {
 				c.PrimaryKey = true
